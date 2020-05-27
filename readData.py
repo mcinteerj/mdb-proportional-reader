@@ -1,0 +1,764 @@
+#!/usr/bin/env python3
+from pymongo import MongoClient
+from multiprocessing import Process, Queue
+from threading import Thread
+import multiprocessing
+import threading
+import timeit
+import random
+import datetime
+import json
+import math
+import time
+from prettytable import PrettyTable
+import os
+import global_config
+import read_config
+import sys
+import curses
+
+def main():
+    # Retrieve basic read configuration from config file
+    print("Retrieving read config....")
+    read_duration_seconds = read_config.read_duration_seconds
+
+    read_procs = read_config.read_procs
+    threads_per_read_proc = read_config.threads_per_read_proc
+
+    read_ratio_list = read_config.read_ratio_list
+    docs_ratio_list = read_config.docs_ratio_list
+
+    # Count docs in collection (informs docreading_group Ranges)
+    print("Counting Existing Documents in Collection")
+    total_docs = get_doc_count()
+    
+    # Create reading groups (function returns a list of reading group dicts)
+    print("Creating Reading Groups")
+    reading_groups_list = get_reading_groups_list(read_ratio_list, docs_ratio_list, total_docs)
+
+    # Print reading groups (formatted as table)
+    print_reading_groups(reading_groups_list)
+
+    # Create a multi-proc manager to manage a shared dictionary between processes
+    manager = multiprocessing.Manager()
+
+    # Create a managed/shared dict 
+    coordination_dict = manager.dict({
+        'start_time': False,
+        'end_time': False,
+        'reading_groups_list': reading_groups_list,
+        'read_procs': read_procs,
+        'threads_per_read_proc': threads_per_read_proc,
+        'total_read_threads': read_procs * threads_per_read_proc,
+        'thread_states': manager.dict(), 
+        'interim_results': manager.list(),
+        'full_results': {}
+    })
+
+    # Create a queue for each process to add individual request response metrics results to
+    response_metrics_queue = Queue()
+
+    # Create a process_list
+    process_list = []
+
+    # Add a coordination process to the process list
+    process_list.extend([Process(target=results_handler,args=(response_metrics_queue, coordination_dict))])
+    
+    # Add query execution process(es) to the process list
+    process_list.extend(get_query_execution_processes(response_metrics_queue, coordination_dict))
+    
+    # Start all processes
+    start_processes(process_list)
+    
+    # Start the process coordinator
+    process_coordinator(response_metrics_queue, coordination_dict, read_duration_seconds)
+    
+    # Join all processes
+    join_processes(process_list)
+
+def get_doc_count():
+    # Define the mongoclient/collection
+    coll = get_mongo_collection()
+
+    # Return the count of docs in collection
+    return coll.estimated_document_count()
+
+def get_reading_groups_list(read_ratio_list, docs_ratio_list, totalDocs):
+    # read_ratio_list and docs_ratio_list must have the same length
+    # each pair of entries (one from each list) generates a docreading_group
+    if (len(read_ratio_list) != len(docs_ratio_list)):
+        print()
+        print("read_ratio_list (length: " + str(len(read_ratio_list)) + ") and docs_ratio_list (length: " + str(len(docs_ratio_list)) + ") must be the same length")
+        sys.exit("Error in read_config file")
+    
+    reading_groups_list = []
+
+    # For each entry in the read_ratio_list
+    for i in range(len(read_ratio_list)):
+        # docsRatio = entry / sum of entries
+        docs_proportion = (docs_ratio_list[i] / sum(docs_ratio_list))
+        read_proportion = (read_ratio_list[i] / sum(read_ratio_list))
+
+        if (len(reading_groups_list) == 0):
+            # Set lower boundary of range to 0 if first entry in list
+            lower = 0
+        else:
+            # Set lower boundry of range to upper boundary of previous entry in list
+            lower = reading_groups_list[-1]["docs_upper"]
+        
+        # Set upper to the lower plus an increment based on docsRatio * totalDocs
+        upper = lower + (math.floor(docs_proportion * totalDocs))
+
+        # Add reading group to list
+        reading_groups_list.append({
+            "reading_group_id": i,
+            "read_proportion": read_proportion,
+            "docs_lower": lower,
+            "docs_upper": upper,
+            "docs_in_range": (upper - lower)
+            })
+
+    # Return list of reading groups
+    return reading_groups_list
+
+def print_reading_groups(reading_groups_list):
+    # Initialise the PrettyTable
+    table = PrettyTable()
+    
+    # Set the table title
+    table.title = "Reading Groups"
+
+    # Initialise the fields list
+    fields = []
+
+    # Add each key in the first read_ratio_list as fields to the table
+    for key in reading_groups_list[0].keys():
+        fields.append(key)
+    table.field_names = fields
+    
+    # For each item in the reading_groups list add a row to the table
+    for reading_group in reading_groups_list:
+        row = []
+
+        # Add the values of each field to the row list
+        for field in reading_group:
+            row.append(reading_group[field])
+        
+        # add the row to the table
+        table.add_row(row)
+
+    print()
+    print(table)
+    print()
+
+def get_query_execution_processes(response_metrics_queue, coordination_dict):
+    # Initialise process list
+    process_list = []
+    
+    for p in range(coordination_dict['read_procs']):
+        process = Process(target=begin_query_execution_threads,args=(response_metrics_queue, coordination_dict))
+        process_list.append(process)
+
+    return process_list
+
+def start_processes(process_list):
+    # Start each process in the list
+    for process in process_list:
+        process.start()
+
+def results_handler(response_metrics_queue, coordination_dict):
+    # Define basic thread info
+    current_proc_id = multiprocessing.current_process().pid
+    current_thread_id = str(current_proc_id) + "-" + str(threading.current_thread().ident)
+
+    # As sub-objects within multiprocessing managed dicts cannot be updated by individual field,
+    # This will instantiate a dict used to represent the state of this thread
+    # We will then update the entire sub-dict in the managed coordination dict
+    thread_info = {
+        'type': 'results_handler',
+        'phase': 'awaiting_test_timing',
+        'thread_id': current_thread_id,
+        'process_id': current_proc_id
+    }
+    
+    coordination_dict['thread_states'][current_thread_id] = thread_info
+    
+    # Block until start and end times added to coordination dict
+    wait_for_timings(coordination_dict)
+    
+    # Update the reported 'phase' in the coordination_dict
+    thread_info['phase'] = 'preparing_for_start'
+    coordination_dict['thread_states'][current_thread_id] = thread_info
+
+    # Set the Start and End times
+    start_time = coordination_dict['start_time']
+    end_time = coordination_dict['end_time']
+
+    results_list = []
+    resp_item_by_reading_group = {}
+    full_results = get_init_results_dict(coordination_dict)
+
+    bucket_duration = read_config.interval_result_reporting_secs
+    bucket_start_time = start_time
+    bucket_end_time = bucket_start_time + datetime.timedelta(seconds=bucket_duration)
+    bucket_no = 0
+    
+    # Update the reported 'phase' in the coordination_dict
+    thread_info['phase'] = 'waiting_for_start_time'
+    coordination_dict['thread_states'][current_thread_id] = thread_info
+
+    # Wait until start time
+    wait_for_start(start_time)
+
+    # Update the reported 'phase' in the coordination_dict
+    thread_info['phase'] = 'awaiting_resp_queue_items'
+    coordination_dict['thread_states'][current_thread_id] = thread_info
+
+    # Block while waiting for queue items
+    while response_metrics_queue.empty():
+        time.sleep(0.01)
+    
+    # Update the reported 'phase' in the coordination_dict
+    thread_info['phase'] = 'executing'
+    coordination_dict['thread_states'][current_thread_id] = thread_info
+
+    # Loop until endtime has passed and queue is empty
+    while datetime.datetime.now() < end_time or not response_metrics_queue.empty() or items_still_to_be_processed(resp_item_by_reading_group):
+        # If the queue has items
+        if not response_metrics_queue.empty():
+            # Get item from the queue
+            response_item_batch = response_metrics_queue.get(True, 2)
+
+            for response_item in response_item_batch:    
+                # Assign vars for each of the elements of the tuple
+                resp_reading_group, resp_response_time, resp_timestamp = response_item
+
+                # Add the response time to the current list
+                resp_item_by_reading_group.setdefault(resp_reading_group, []).append((resp_timestamp, resp_response_time))
+
+        # Set the latest resp timestamp based on the last item in the list (first value [0] in tup = resp_timestamp)
+        # NOTE: This section is essentially broken. Moving to batch entries on the queue has broken bucketing
+        # We can no longer assume a linear (or near linear) ordering of timestamps as batches will contain many timestamps
+        latest_resp_timestamp = datetime.datetime.min
+        # For each list of responses by reading group
+        for reading_group in resp_item_by_reading_group:
+            # If the reading group has >0 responses
+            if len(resp_item_by_reading_group[reading_group]) > 0:
+                # Set the latest response timestamp to the max of itself or the last timestamp on the list.
+                latest_resp_timestamp = max((resp_item_by_reading_group[reading_group][-1][0], latest_resp_timestamp))
+
+        queue_empty = response_metrics_queue.empty()
+        now = datetime.datetime.now()
+
+        end_of_bucket = latest_resp_timestamp > bucket_end_time
+        last_response = (now > end_time and queue_empty)
+        # If this response item is beyond the end of this bucket, OR (we have passed the end time AND the queue is now empty) 
+        if end_of_bucket or last_response:
+            # Reset the interim results so they can be over-written
+            coordination_dict['interim_results'][:] = []
+
+            # Summarise response metrics for all items (by reading_group) in list
+            for reading_group_id in resp_item_by_reading_group:
+                docs_retrieved = len(resp_item_by_reading_group[reading_group_id])
+
+                # Total response time is the sum of all response times (second element in each tuple)
+                total_resp_time_ms = sum([resp[1] for resp in resp_item_by_reading_group[reading_group_id]])
+
+                reading_group_bucket = {
+                    "reading_group_id": reading_group_id,
+                    "bucket_no": bucket_no,
+                    "bucket_start_time": bucket_start_time.strftime("%H:%M:%S"),
+                    "bucket_end_time": bucket_end_time.strftime("%H:%M:%S"),
+                    "bucket_duration_secs": (bucket_end_time - bucket_start_time).seconds,
+                    "total_docs_retrieved": docs_retrieved,
+                    "tps": docs_retrieved / (bucket_end_time - bucket_start_time).seconds if (bucket_end_time - bucket_start_time).seconds > 0 else 0,
+                    "avg_response_time_ms": total_resp_time_ms / docs_retrieved if docs_retrieved > 0 else 0
+                }
+
+                # Add the bucket the reading_group
+                full_results["reading_groups"][reading_group_id]["buckets"].append(reading_group_bucket)
+                coordination_dict['interim_results'].append(reading_group_bucket)
+
+                # Reset resp items list for each reading group
+                resp_item_by_reading_group[reading_group_id] = []
+
+            # Increment bucket
+            bucket_no += 1
+            bucket_start_time = bucket_end_time
+            bucket_end_time = bucket_start_time + datetime.timedelta(seconds=bucket_duration) if bucket_start_time + datetime.timedelta(seconds=bucket_duration) < end_time else end_time
+
+            full_results = update_summary_metrics(full_results)
+
+    coordination_dict['full_results'] = full_results
+    thread_info['phase'] = 'finished'
+    coordination_dict['thread_states'][current_thread_id] = thread_info
+
+def get_init_results_dict(coordination_dict):
+    dict = { 
+        "test_run": coordination_dict["start_time"].strftime("%Y-%m-%d %H:%M:%S"),
+        "start_time": coordination_dict["start_time"].strftime("%Y-%m-%d %H:%M:%S"),
+        "end_time": coordination_dict["end_time"].strftime("%Y-%m-%d %H:%M:%S"),
+        'read_procs': coordination_dict['read_procs'],
+        'threads_per_read_proc': coordination_dict['threads_per_read_proc'],
+        'total_read_threads': coordination_dict['read_procs'] * coordination_dict['threads_per_read_proc'],
+        "test_duration_seconds": (coordination_dict["end_time"] - coordination_dict["start_time"]).seconds,
+        "total_docs_retrieved": 0,
+        "tps": 0,
+        "avg_response_ms": 0,
+        "reading_groups": {}
+    }
+
+    for reading_group in coordination_dict['reading_groups_list']:
+        reading_group_results = {
+            "reading_group_id": reading_group['reading_group_id'],
+            "read_proportion": reading_group['read_proportion'],
+            "docs_in_range": reading_group['docs_in_range'],
+            "docs_lower": reading_group['docs_lower'],
+            "docs_upper": reading_group['docs_upper'],
+            "elapsed_seconds": 0,
+            "total_docs_retrieved": 0,
+            "tps": 0,
+            "avg_response_ms": 0,
+            "buckets": []
+        }
+        dict["reading_groups"][reading_group['reading_group_id']] = reading_group_results
+    
+    return dict
+
+def begin_query_execution_threads(response_metrics_queue, coordination_dict):
+    # Initialise Thread list
+    thread_list = []
+    threads_per_read_proc = coordination_dict['threads_per_read_proc']
+    coll = get_mongo_collection()
+    
+    # Add to the thread_list the number of threads defined in the config file
+    for t in range(threads_per_read_proc):
+        thread = Thread(target=execute_queries,args=(response_metrics_queue, coll, coordination_dict))
+        thread_list.append(thread)
+
+    # Start the threads
+    for thread in thread_list:
+        thread.start()
+
+    for thread in thread_list:
+        thread.join()
+
+def execute_queries(response_metrics_queue, coll, coordination_dict):
+    # Define basic thread info
+    current_proc_id = multiprocessing.current_process().pid
+    current_thread_id = str(current_proc_id) + "-" + str(threading.current_thread().ident)
+
+    # As sub-objects within multiprocessing managed dicts cannot be updated by individual field,
+    # This will instantiate a dict used to represent the state of this thread
+    # We will then update the entire sub-dict in the managed coordination dict
+    thread_info = {
+        'type': 'query_executor',
+        'phase': 'awaiting_test_timing',
+        'thread_id': current_thread_id,
+        'process_id': current_proc_id
+    }
+
+    coordination_dict['thread_states'][current_thread_id] = thread_info
+
+    # Wait for start/end times to be added to the coordination_dict
+    wait_for_timings(coordination_dict)
+    
+    # Update the reported 'phase' in the coordination_dict
+    thread_info['phase'] = 'preparing_for_start'
+    coordination_dict['thread_states'][current_thread_id] = thread_info
+    
+    # Set the Start and End times
+    start_time = coordination_dict['start_time']
+    end_time = coordination_dict['end_time']
+    
+    # Set the size of the response metrics batches to build before adding to the queue
+    response_metrics_batch_size = read_config.response_metrics_batch_size
+
+    # Initialise list which will represent the reading_groups weighted by read_proportion
+    weighted_reading_group_list = get_weighted_reading_groups_list(coordination_dict['reading_groups_list'])
+    
+    # Update the reported 'phase' in the coordination_dict
+    thread_info['phase'] = 'waiting_for_start_time'
+    coordination_dict['thread_states'][current_thread_id] = thread_info
+
+    # Wait for start time
+    wait_for_start(start_time)
+
+    # Update the reported 'phase' in the coordination_dict
+    thread_info['phase'] = 'executing'
+    coordination_dict['thread_states'][current_thread_id] = thread_info
+
+    # Initialise a list of response metrics, we will submit batches of multiple response metrics
+    #  to the queue in order to reduce contention/locking relating to the queue
+    response_metrics_batch = []
+
+    count = 0
+    # Loop until endtime
+    while (datetime.datetime.now() < end_time):
+        # Get a doc id and reading group (in line with defined proportions)
+        reading_group_id, doc_id = get_doc_id(coordination_dict['reading_groups_list'], weighted_reading_group_list)
+
+        # Time the execution of the find command
+        start = datetime.datetime.now()
+        # This 'projects'away the 'blob' field to reduce network overhead, it shouldn't materially impact test results
+        coll.find_one({"_id": doc_id},{"blob": 0})
+        end = datetime.datetime.now()
+
+        # Calculate the response time in milliseconds
+        responseTimeMs = ((end - start).total_seconds() * 1000)
+        count += 1
+        # Adda tuple entry to the response metrics batch
+        response_metrics_batch.append((reading_group_id, responseTimeMs, start))
+        
+        # If the number of entries in the batch has reached the batch size
+        if len(response_metrics_batch) >= response_metrics_batch_size:
+            # Add a the batch to the response_metrics_queue
+            response_metrics_queue.put(response_metrics_batch)
+
+            # Reset the batch
+            response_metrics_batch = []
+    
+    # Now looping has complete, add any remaining response items to the queue
+    if len(response_metrics_batch) > 0:
+        response_metrics_queue.put(response_metrics_batch)
+    print(str(count))
+    # Update the reported 'phase' in the coordination_dict
+    thread_info['phase'] = 'finished'
+    coordination_dict['thread_states' ][current_thread_id] = thread_info
+
+def get_mongo_collection():
+    # Define mongoclient based on global_config
+    client = MongoClient(global_config.mongo_uri)
+    db = client[global_config.db_name]
+    coll = db[global_config.coll_name]
+
+    return coll
+
+def wait_for_timings(coordination_dict):
+    # While start and end times have not been added, sleep/loop
+    while coordination_dict['start_time'] == False or coordination_dict['end_time'] == False: 
+        time.sleep(0.2)
+
+def wait_for_start(start_time):
+    # While start and end times have not been added, sleep/loop
+    while datetime.datetime.now() < start_time:
+        time.sleep(0.001)
+
+def get_weighted_reading_groups_list(reading_groups_list):
+    weighted_reading_group_list = []
+
+    # Generating this list is a little obtuse. We are essentially creating a list of many reading_group_ids, 
+    # where the frequency of each ID is determined by the read proportion. This allows us to randomly
+    # select a reading_group from the list while maintaining the desired proportionality
+    
+    # For each reading_group in the list
+    for reading_group in reading_groups_list:
+        # Add int(readingProportion * 1000) entries of the current reading_group to the array
+        weighted_reading_group_list.extend([reading_group["reading_group_id"]] * int(reading_group["read_proportion"] * 1000))
+
+    return weighted_reading_group_list
+
+def get_doc_id(reading_groups_list, weighted_reading_group_list):
+    # Select a group at random from the weighted list
+    reading_group = random.choice(weighted_reading_group_list)
+
+    # Define the lower and upper range boundaries for the doc IDs in that reading_group
+    lower = reading_groups_list[reading_group]["docs_lower"]
+    upper = reading_groups_list[reading_group]["docs_upper"]
+    
+    # Define the query based on randomly selecting an id in the defined range
+    doc_id = random.randrange(lower, upper)
+
+    return reading_group, doc_id
+
+def process_coordinator(response_metrics_queue, coordination_dict, read_duration_seconds):
+    all_threads_ready = False
+    pre_start_buffer_secs = read_config.pre_start_buffer_secs
+    curses_mode = read_config.curses_mode
+    
+    # +1 is for the Results Handler
+    expected_no_of_threads = (coordination_dict["total_read_threads"]) + 1
+    # While waiting for all processes/threads to start (incl +1 for results handler)
+    while all_threads_ready == False:
+        current_reporting_threads = len(coordination_dict['thread_states'].keys())
+        if current_reporting_threads != expected_no_of_threads:
+            print("Waiting for " + str(expected_no_of_threads - current_reporting_threads) + " of " +  str(expected_no_of_threads) + " threads to start")
+            time.sleep(0.2)
+        else:
+            all_threads_ready = True
+            print(str(len(coordination_dict['thread_states'].keys())) + " of " +  str(expected_no_of_threads) + " threads started")
+
+    # Set the start and end times for the test
+    start_time = datetime.datetime.now() + datetime.timedelta(seconds=pre_start_buffer_secs)
+    end_time = start_time + datetime.timedelta(seconds=read_duration_seconds)
+    coordination_dict['start_time'] = start_time
+    coordination_dict['end_time'] = end_time
+
+    print("Query execution to begin in " + str(pre_start_buffer_secs) + " seconds")
+
+    def do_display(scr):
+        printed_text = ''
+        curses.use_default_colors()
+        
+        while not is_test_finished(coordination_dict):
+            scr.clear()
+            scr.addstr(str(get_thread_states_table(coordination_dict))+"\n")
+            scr.addstr(str(get_latest_interim_results_table(coordination_dict)))
+            printed_text += str(get_thread_states_table(coordination_dict)) + "\n"
+            printed_text += str(get_latest_interim_results_table(coordination_dict)) + "\n \n"
+            scr.refresh()
+            time.sleep(1)
+
+        scr.clear()
+        scr.addstr(str(get_thread_states_table(coordination_dict))+"\n")
+        scr.addstr(str(get_latest_interim_results_table(coordination_dict)))
+        printed_text += str(get_thread_states_table(coordination_dict)) + "\n"
+        printed_text += str(get_latest_interim_results_table(coordination_dict)) + "\n \n"
+        scr.refresh()
+
+        return printed_text
+
+
+    if curses_mode:
+        printed_text = curses.wrapper(do_display)
+        print(printed_text)
+    else:
+        while not is_test_finished(coordination_dict):
+            time.sleep(1)
+            print("*******")
+            print(get_thread_states_table(coordination_dict))
+            print()
+            print(get_latest_interim_results_table(coordination_dict))
+            print("*******")
+
+    results_table = get_final_results_table(coordination_dict['full_results'])
+
+    print(results_table)
+
+    # Write the fullResultsDict to a file
+    full_results_file_name = coordination_dict["full_results"]["test_run"] + "-full_results.json"
+    write_string_to_file(json.dumps(coordination_dict['full_results'],indent=2), full_results_file_name)
+    
+    # Write the resultsTable to a file
+    results_table_file_name = coordination_dict["full_results"]["test_run"] + "-results_table.txt"
+    write_string_to_file(str(results_table), results_table_file_name)
+
+    # Print file name/location on screen
+    print("Results Dict written to " + full_results_file_name)
+    print("Results Table written to " + results_table_file_name)
+    
+def is_test_finished(coordination_dict):
+    # For each thread recording a state
+    for thread_state in coordination_dict['thread_states'].values():
+        # If the thread is not in the finished phase
+        if thread_state['phase'] != 'finished':
+            # The test is not finished
+            return False
+    
+    # If all threads are in finished phase, test is finished
+    return True
+
+def get_thread_states_table(coordination_dict):
+    table = PrettyTable()
+    table.title = "Thread State  " + datetime.datetime.now().strftime("%H:%M:%S.%f")
+    fields = []
+    rows = []
+
+    # For each thread in the dict
+    for thread_state in coordination_dict['thread_states'].values():
+        # If fields have not yet been set
+        if len(fields) == 0:
+            # Set fields
+            fields = thread_state.keys()
+        
+        # Initialise a new row
+        row = []
+
+        # Add values to the row
+        for field in fields:
+            row.append(thread_state[field])
+        
+        # Add the row to the table
+        table.add_row(row)
+
+    # Set the field names based on the unique fields in the fields list
+    table.field_names = fields
+
+    return table
+
+def get_latest_interim_results_table(coordination_dict):
+    interim_results_buckets = coordination_dict['interim_results']
+    if len(interim_results_buckets) == 0:
+        return ""
+    
+    table = PrettyTable()
+    
+    fields = []
+    rows = []
+    start_time = ""
+    end_time = ""
+
+    for bucket in interim_results_buckets:
+        # If fields have not yet been set
+        if len(fields) == 0:
+            start_time = bucket["bucket_start_time"]
+            del bucket["bucket_start_time"]
+            end_time = bucket["bucket_end_time"]
+            del bucket["bucket_end_time"]
+            bucket_no = str(bucket["bucket_no"])
+            del bucket["bucket_no"]
+
+            # Set the fields            
+            fields = bucket.keys()
+
+        # Initialise a new row
+        row = []
+
+        # Add values to the row
+        for field in fields:
+            row.append(bucket[field])
+        
+        # Add the row to the table
+        table.add_row(row)
+
+    # Set the field names based on the unique fields in the fields list
+    table.field_names = fields
+    table.title = "Interim Result: " + bucket_no + " (" + start_time + " - " + end_time + ")"
+    return table
+
+def get_final_results_table(full_results):
+    outer_table = PrettyTable([str("Results for Test Run: " + full_results["test_run"])])
+    outer_table.align = 'l'
+
+
+    outer_table.add_row([get_summary_table(full_results)])
+    outer_table.add_row([get_reading_groups_table(full_results)])
+    outer_table.add_row([get_buckets_table(full_results)])
+
+    return outer_table
+
+def get_summary_table(full_results):
+    fields = []
+    row = []
+    start_time = full_results.pop('start_time')
+    end_time = full_results.pop('end_time')
+
+    for key,value in full_results.items():
+        if key != "reading_groups":
+            fields.append(key)
+            row.append(value)
+    
+    summary_table = PrettyTable(fields)
+    summary_table.title = "Results Summary (" + start_time + " - " + end_time + ")"
+    summary_table.add_row(row)
+
+    return summary_table
+
+def get_reading_groups_table(full_results):
+    fields = []
+    rows = []
+
+    for reading_group_id in full_results["reading_groups"]:
+        reading_group = full_results["reading_groups"][reading_group_id]
+        if len(fields) == 0:
+            for key in reading_group.keys():
+                if key != "buckets":
+                    fields.append(key)
+        
+        row = []
+
+        for field in fields:
+            if field != "buckets":
+                row.append(reading_group[field])
+
+        rows.append(row)
+
+    reading_group_table = PrettyTable(fields)
+    reading_group_table.title = "Reading Group Results"
+    
+    for row in rows:
+        reading_group_table.add_row(row)
+
+    return reading_group_table
+
+def get_buckets_table(full_results):
+    fields = []
+    rows = []
+
+    for reading_group_id in full_results["reading_groups"]:
+        reading_group = full_results["reading_groups"][reading_group_id]
+        for bucket in reading_group["buckets"]:
+            if len(fields) == 0:
+                fields = bucket.keys()
+            
+            row = []
+
+            for field in fields:
+                row.append(bucket[field])
+            
+            rows.append(row)
+    
+    buckets_table = PrettyTable(fields)
+    buckets_table.title = "Bucket Results"
+
+    for row in rows:
+        buckets_table.add_row(row)
+    
+    return buckets_table
+
+def items_still_to_be_processed(resp_item_by_reading_group):
+    for reading_group_id in resp_item_by_reading_group:
+        if len(resp_item_by_reading_group[reading_group_id]) > 0:
+            return True 
+
+    return False
+
+def update_summary_metrics(full_results):
+    new_full_results = full_results
+
+    full_test_duration_seconds = full_results["test_duration_seconds"]
+    full_test_total_docs_retrieved = 0
+    full_test_total_response_time_ms = 0
+        
+    for reading_group in full_results["reading_groups"]:
+        reading_group_duration_seconds = 0
+        reading_group_total_docs_retrieved = 0
+        reading_group_total_response_time_ms = 0
+
+        for bucket in full_results["reading_groups"][reading_group]["buckets"]:
+            reading_group_duration_seconds += bucket["bucket_duration_secs"]
+            reading_group_total_docs_retrieved += bucket["total_docs_retrieved"]
+            reading_group_total_response_time_ms += ( bucket["avg_response_time_ms"] * bucket["total_docs_retrieved"] )
+        
+        full_results["reading_groups"][reading_group]["elapsed_seconds"] = reading_group_duration_seconds
+        full_results["reading_groups"][reading_group]["total_docs_retrieved"] = reading_group_total_docs_retrieved
+        full_results["reading_groups"][reading_group]["tps"] = reading_group_total_docs_retrieved / reading_group_duration_seconds if reading_group_duration_seconds > 0 else 0
+        full_results["reading_groups"][reading_group]["avg_response_ms"] = reading_group_total_response_time_ms / reading_group_total_docs_retrieved if reading_group_total_docs_retrieved > 0 else 0
+
+        full_test_total_docs_retrieved += reading_group_total_docs_retrieved
+        full_test_total_response_time_ms += reading_group_total_response_time_ms
+    
+    full_results["total_docs_retrieved"] = full_test_total_docs_retrieved
+    full_results["tps"] = full_test_total_docs_retrieved / full_test_duration_seconds if full_test_duration_seconds > 0 else 0 
+    full_results["avg_response_ms"] = full_test_total_response_time_ms / full_test_total_docs_retrieved if full_test_total_docs_retrieved > 0 else 0
+
+    return full_results
+
+def write_string_to_file(string, file_name):
+    path = "./read_results/"
+    if not os.path.exists(path):
+        os.mkdir(path)
+
+    full_file_path = path + file_name
+
+    with open(full_file_path, 'w') as file:
+        file.write(string)
+
+def join_processes(process_list):
+    for process in process_list:
+        process.join()
+
+    print("All processes joined")
+
+if __name__ == "__main__":
+    main()

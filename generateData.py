@@ -66,8 +66,8 @@ def dropCollection():
 def getMongoCollection():
     # Define mongoclient based on global_config
     client = MongoClient(global_config.mongo_uri)
-    db = client[global_config.dbname]
-    coll = db[global_config.collname]
+    db = client[global_config.db_name]
+    coll = db[global_config.coll_name]
 
     return coll
 

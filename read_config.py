@@ -3,10 +3,10 @@
 read_ratio_list = [5,15]
 docs_ratio_list = [100,50]
 
-read_duration_seconds = 10
-interval_result_reporting_secs = 6
+read_duration_seconds = 7
+result_bucket_duration_secs = 2
 
-read_procs  = 1
+read_procs  = 2
 threads_per_read_proc = 1
 
 # With curses mode enabled(true), curses are used to show interim status on screen

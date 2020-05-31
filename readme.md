@@ -12,17 +12,16 @@ TBC
 
 ### Should do now
 ### Things Remaining
-[ ] Review comments to make sure they all still make sense
-[ ] Compare to POCDriver for a similar number of threads
-[ ] Run a couple of proper tests
-[ ] Write up a readme.md
-[ ] The results handler is 'missing' the final batch of results inbound from the execution threads. I think this is because they arrive after the end time and the results handler has already broken the loop. Extending the loop by adding 2s to the end time in the results handler allowed it to see the additional responses, but it cause an issue with bucketing as it created a new bucket for every record (as each one met the curren time stamp > end time stamp)
-        - Probably best to move back to defining the buckets rigidly at the start of the results handling and then just add each result into the relevant bucket as you go. 
-        - You could update the bucket summaries with each response item as opposed to doing it once the bucket is finalised. This is probably a fair bit more work for the results handler (consider number precision...), but seems like it might the only way to provide _some_ reporting during the test. The alternative is to just wait till the end then do a bulk summary.
+
 [ ] Check how the new response queue batch process works under higher load (on GCP VM). Run test cases such as
     - Normal test, batch size [1,200]
     - Test with 0.01s sleep in each execution, batch size [1,200]
     - Run the two test above with 1:1 proc:thread, and then with 10:1 proc:thread
+[ ] Review comments to make sure they all still make sense
+[ ] Compare to POCDriver for a similar number of threads
+[ ] Run a couple of proper tests
+[ ] Write up a readme.md
+
 
 #### Can do later
 [ ] Use a scheduler or similar to start the execution (rather than while less than loop)

@@ -28,7 +28,7 @@ def main():
     read_ratio_list = read_config.read_ratio_list
     docs_ratio_list = read_config.docs_ratio_list
 
-    # Count docs in collection (informs docreading_group Ranges)
+    # Count docs in collection (informs reading_group Ranges)
     print("Counting Existing Documents in Collection")
     total_docs = get_doc_count()
     
@@ -55,7 +55,7 @@ def main():
         'full_results': {}
     })
 
-    # Create a queue for each process to add individual request response metrics results to
+    # Create a queue for each process to add response metrics results to
     response_metrics_queue = Queue()
 
     # Create a process_list
@@ -95,7 +95,7 @@ def get_reading_groups_list(read_ratio_list, docs_ratio_list, totalDocs):
 
     # For each entry in the read_ratio_list
     for i in range(len(read_ratio_list)):
-        # docsRatio = entry / sum of entries
+        # proportions = entry / sum of entries
         docs_proportion = (docs_ratio_list[i] / sum(docs_ratio_list))
         read_proportion = (read_ratio_list[i] / sum(read_ratio_list))
 
@@ -155,10 +155,12 @@ def get_query_execution_processes(response_metrics_queue, coordination_dict):
     # Initialise process list
     process_list = []
     
+    # Add a read process to the list based on the number of read_procs defined
     for p in range(coordination_dict['read_procs']):
         process = Process(target=begin_query_execution_threads,args=(response_metrics_queue, coordination_dict))
         process_list.append(process)
 
+    # Return the list of processes
     return process_list
 
 def start_processes(process_list):
@@ -194,14 +196,9 @@ def results_handler(response_metrics_queue, coordination_dict):
     start_time = coordination_dict['start_time']
     end_time = coordination_dict['end_time']
 
-    results_list = []
-    resp_item_by_reading_group = {}
-    full_results = get_init_results_dict(coordination_dict)
-
-    bucket_duration = read_config.interval_result_reporting_secs
-    bucket_start_time = start_time
-    bucket_end_time = bucket_start_time + datetime.timedelta(seconds=bucket_duration)
-    bucket_no = 0
+    # Initialise the bucket_timings and full_results dicts
+    bucket_timings = get_bucket_timings_dict(start_time, end_time, read_config.result_bucket_duration_secs)
+    full_results = get_init_results_dict(coordination_dict, bucket_timings)
     
     # Update the reported 'phase' in the coordination_dict
     thread_info['phase'] = 'waiting_for_start_time'
@@ -222,8 +219,8 @@ def results_handler(response_metrics_queue, coordination_dict):
     thread_info['phase'] = 'executing'
     coordination_dict['thread_states'][current_thread_id] = thread_info
 
-    # Loop until endtime has passed and queue is empty
-    while datetime.datetime.now() < end_time or not response_metrics_queue.empty() or items_still_to_be_processed(resp_item_by_reading_group):
+    # Loop until endtime (+1s for final responses to come through) has passed and queue is empty
+    while datetime.datetime.now() < (end_time + datetime.timedelta(seconds=1)) or not response_metrics_queue.empty():
         # If the queue has items
         if not response_metrics_queue.empty():
             # Get item from the queue
@@ -233,68 +230,22 @@ def results_handler(response_metrics_queue, coordination_dict):
                 # Assign vars for each of the elements of the tuple
                 resp_reading_group, resp_response_time, resp_timestamp = response_item
 
-                # Add the response time to the current list
-                resp_item_by_reading_group.setdefault(resp_reading_group, []).append((resp_timestamp, resp_response_time))
+                # Deterime the bucket no for the given timestamp
+                bucket_no = get_bucket_no(bucket_timings, resp_timestamp)
 
-        # Set the latest resp timestamp based on the last item in the list (first value [0] in tup = resp_timestamp)
-        # NOTE: This section is essentially broken. Moving to batch entries on the queue has broken bucketing
-        # We can no longer assume a linear (or near linear) ordering of timestamps as batches will contain many timestamps
-        latest_resp_timestamp = datetime.datetime.min
-        # For each list of responses by reading group
-        for reading_group in resp_item_by_reading_group:
-            # If the reading group has >0 responses
-            if len(resp_item_by_reading_group[reading_group]) > 0:
-                # Set the latest response timestamp to the max of itself or the last timestamp on the list.
-                latest_resp_timestamp = max((resp_item_by_reading_group[reading_group][-1][0], latest_resp_timestamp))
+                # Update the bucket values (by reading group and bucket) for this response_time
+                full_results['reading_groups'][resp_reading_group]['buckets'][bucket_no] = add_resp_to_bucket(full_results['reading_groups'][resp_reading_group]['buckets'][bucket_no], resp_response_time)
 
-        queue_empty = response_metrics_queue.empty()
-        now = datetime.datetime.now()
-
-        end_of_bucket = latest_resp_timestamp > bucket_end_time
-        last_response = (now > end_time and queue_empty)
-        # If this response item is beyond the end of this bucket, OR (we have passed the end time AND the queue is now empty) 
-        if end_of_bucket or last_response:
-            # Reset the interim results so they can be over-written
-            coordination_dict['interim_results'][:] = []
-
-            # Summarise response metrics for all items (by reading_group) in list
-            for reading_group_id in resp_item_by_reading_group:
-                docs_retrieved = len(resp_item_by_reading_group[reading_group_id])
-
-                # Total response time is the sum of all response times (second element in each tuple)
-                total_resp_time_ms = sum([resp[1] for resp in resp_item_by_reading_group[reading_group_id]])
-
-                reading_group_bucket = {
-                    "reading_group_id": reading_group_id,
-                    "bucket_no": bucket_no,
-                    "bucket_start_time": bucket_start_time.strftime("%H:%M:%S"),
-                    "bucket_end_time": bucket_end_time.strftime("%H:%M:%S"),
-                    "bucket_duration_secs": (bucket_end_time - bucket_start_time).seconds,
-                    "total_docs_retrieved": docs_retrieved,
-                    "tps": docs_retrieved / (bucket_end_time - bucket_start_time).seconds if (bucket_end_time - bucket_start_time).seconds > 0 else 0,
-                    "avg_response_time_ms": total_resp_time_ms / docs_retrieved if docs_retrieved > 0 else 0
-                }
-
-                # Add the bucket the reading_group
-                full_results["reading_groups"][reading_group_id]["buckets"].append(reading_group_bucket)
-                coordination_dict['interim_results'].append(reading_group_bucket)
-
-                # Reset resp items list for each reading group
-                resp_item_by_reading_group[reading_group_id] = []
-
-            # Increment bucket
-            bucket_no += 1
-            bucket_start_time = bucket_end_time
-            bucket_end_time = bucket_start_time + datetime.timedelta(seconds=bucket_duration) if bucket_start_time + datetime.timedelta(seconds=bucket_duration) < end_time else end_time
-
+            # Update the full results dict and then the coordination dict with the latest results
             full_results = update_summary_metrics(full_results)
+            coordination_dict['full_results'] = full_results
 
-    coordination_dict['full_results'] = full_results
+    # Update the thread state to show thread is finished
     thread_info['phase'] = 'finished'
     coordination_dict['thread_states'][current_thread_id] = thread_info
 
-def get_init_results_dict(coordination_dict):
-    dict = { 
+def get_init_results_dict(coordination_dict, bucket_timings):
+    results_dict = { 
         "test_run": coordination_dict["start_time"].strftime("%Y-%m-%d %H:%M:%S"),
         "start_time": coordination_dict["start_time"].strftime("%Y-%m-%d %H:%M:%S"),
         "end_time": coordination_dict["end_time"].strftime("%Y-%m-%d %H:%M:%S"),
@@ -319,11 +270,23 @@ def get_init_results_dict(coordination_dict):
             "total_docs_retrieved": 0,
             "tps": 0,
             "avg_response_ms": 0,
-            "buckets": []
+            "buckets": {}
         }
-        dict["reading_groups"][reading_group['reading_group_id']] = reading_group_results
+        for bucket_no in bucket_timings:
+            reading_group_results['buckets'][bucket_no] = {
+                    "reading_group_id": reading_group['reading_group_id'],
+                    "bucket_no": bucket_no,
+                    "bucket_start_time": bucket_timings[bucket_no]['bucket_start_time'].strftime("%H:%M:%S.%f"),
+                    "bucket_end_time": bucket_timings[bucket_no]['bucket_end_time'].strftime("%H:%M:%S.%f"),
+                    "bucket_duration_secs": (bucket_timings[bucket_no]['bucket_end_time'] - bucket_timings[bucket_no]['bucket_start_time']).seconds,
+                    "total_docs_retrieved": 0,
+                    "tps": 0,
+                    "avg_response_time_ms": 0
+                }
+
+        results_dict["reading_groups"][reading_group['reading_group_id']] = reading_group_results
     
-    return dict
+    return results_dict
 
 def begin_query_execution_threads(response_metrics_queue, coordination_dict):
     # Initialise Thread list
@@ -392,7 +355,6 @@ def execute_queries(response_metrics_queue, coll, coordination_dict):
     #  to the queue in order to reduce contention/locking relating to the queue
     response_metrics_batch = []
 
-    count = 0
     # Loop until endtime
     while (datetime.datetime.now() < end_time):
         # Get a doc id and reading group (in line with defined proportions)
@@ -406,7 +368,7 @@ def execute_queries(response_metrics_queue, coll, coordination_dict):
 
         # Calculate the response time in milliseconds
         responseTimeMs = ((end - start).total_seconds() * 1000)
-        count += 1
+
         # Adda tuple entry to the response metrics batch
         response_metrics_batch.append((reading_group_id, responseTimeMs, start))
         
@@ -421,7 +383,7 @@ def execute_queries(response_metrics_queue, coll, coordination_dict):
     # Now looping has complete, add any remaining response items to the queue
     if len(response_metrics_batch) > 0:
         response_metrics_queue.put(response_metrics_batch)
-    print(str(count))
+
     # Update the reported 'phase' in the coordination_dict
     thread_info['phase'] = 'finished'
     coordination_dict['thread_states' ][current_thread_id] = thread_info
@@ -438,6 +400,51 @@ def wait_for_timings(coordination_dict):
     # While start and end times have not been added, sleep/loop
     while coordination_dict['start_time'] == False or coordination_dict['end_time'] == False: 
         time.sleep(0.2)
+
+def get_bucket_timings_dict(start_time, end_time, bucket_duration_secs):
+    # Initialise the dict and bucket_duration as a timedelta
+    bucket_timings = {}
+    bucket_duration = datetime.timedelta(seconds=bucket_duration_secs)
+    
+    # Add a small buffer to the test end_time as there is a small window after test end time where a request may be sent 
+    # This is due to the small gap in execute_queries between `while now() < endtime` and `start = now()`
+    end_time = end_time + datetime.timedelta(seconds=0.1)
+
+    # Calculate number of buckets
+    no_of_buckets = math.ceil((end_time - start_time) / bucket_duration)
+
+    # Set start of first bucket to start of test, and end of first bucket to the lower of the start+bucketDur and the overall test end
+    bucket_start_time = start_time
+    bucket_end_time = min((start_time + bucket_duration), end_time)
+
+    # Loop through the number of buckets required
+    for bucket_no in range(no_of_buckets):
+        # Add start and end times for each bucket to the dict
+        bucket_timings[bucket_no] = {}
+        bucket_timings[bucket_no]['bucket_start_time'] = bucket_start_time
+        bucket_timings[bucket_no]['bucket_end_time'] = bucket_end_time
+
+        # Increment the bucket times
+        bucket_start_time += bucket_duration
+        bucket_end_time = min((bucket_start_time + bucket_duration), end_time)
+    
+    # Return the bucket timings dict
+    return bucket_timings
+
+def get_bucket_no(bucket_timings, resp_timestamp):
+    # For each bucket in the timings dict
+    for bucket_no in bucket_timings:
+        # If the current time stamp is within the start/end times for the bucket
+        if resp_timestamp >= bucket_timings[bucket_no]['bucket_start_time'] and resp_timestamp <= bucket_timings[bucket_no]['bucket_end_time']:
+            # Return the bucket number
+            return bucket_no
+
+def add_resp_to_bucket(bucket, resp_response_time):
+    bucket['avg_response_time_ms'] = (((bucket['avg_response_time_ms'] * bucket['total_docs_retrieved']) + resp_response_time) / (bucket['total_docs_retrieved'] + 1))
+    bucket['total_docs_retrieved'] += 1
+    bucket['tps'] = bucket['total_docs_retrieved'] / bucket['bucket_duration_secs'] if bucket['bucket_duration_secs'] > 0 else "bucket duration <1s"
+
+    return bucket
 
 def wait_for_start(start_time):
     # While start and end times have not been added, sleep/loop
@@ -502,18 +509,18 @@ def process_coordinator(response_metrics_queue, coordination_dict, read_duration
         
         while not is_test_finished(coordination_dict):
             scr.clear()
-            scr.addstr(str(get_thread_states_table(coordination_dict))+"\n")
-            scr.addstr(str(get_latest_interim_results_table(coordination_dict)))
+            scr.addstr(str(get_thread_states_table(coordination_dict))+"\n \n")
+            scr.addstr(str(get_bucket_results_table(coordination_dict)))
             printed_text += str(get_thread_states_table(coordination_dict)) + "\n"
-            printed_text += str(get_latest_interim_results_table(coordination_dict)) + "\n \n"
+            printed_text += str(get_bucket_results_table(coordination_dict)) + "\n \n"
             scr.refresh()
             time.sleep(1)
 
         scr.clear()
         scr.addstr(str(get_thread_states_table(coordination_dict))+"\n")
-        scr.addstr(str(get_latest_interim_results_table(coordination_dict)))
+        scr.addstr(str(get_bucket_results_table(coordination_dict)))
         printed_text += str(get_thread_states_table(coordination_dict)) + "\n"
-        printed_text += str(get_latest_interim_results_table(coordination_dict)) + "\n \n"
+        printed_text += str(get_bucket_results_table(coordination_dict)) + "\n \n"
         scr.refresh()
 
         return printed_text
@@ -528,7 +535,7 @@ def process_coordinator(response_metrics_queue, coordination_dict, read_duration
             print("*******")
             print(get_thread_states_table(coordination_dict))
             print()
-            print(get_latest_interim_results_table(coordination_dict))
+            print(get_bucket_results_table(coordination_dict))
             print("*******")
 
     results_table = get_final_results_table(coordination_dict['full_results'])
@@ -586,45 +593,39 @@ def get_thread_states_table(coordination_dict):
 
     return table
 
-def get_latest_interim_results_table(coordination_dict):
-    interim_results_buckets = coordination_dict['interim_results']
-    if len(interim_results_buckets) == 0:
-        return ""
+def get_bucket_results_table(coordination_dict):
+    full_results = coordination_dict['full_results']
     
     table = PrettyTable()
     
     fields = []
     rows = []
-    start_time = ""
-    end_time = ""
 
-    for bucket in interim_results_buckets:
-        # If fields have not yet been set
-        if len(fields) == 0:
-            start_time = bucket["bucket_start_time"]
-            del bucket["bucket_start_time"]
-            end_time = bucket["bucket_end_time"]
-            del bucket["bucket_end_time"]
-            bucket_no = str(bucket["bucket_no"])
-            del bucket["bucket_no"]
+    if 'reading_groups' in full_results:
+        for reading_group_no in full_results['reading_groups']:
+            for bucket_no in full_results['reading_groups'][reading_group_no]['buckets']:
+                bucket = full_results['reading_groups'][reading_group_no]['buckets'][bucket_no]
 
-            # Set the fields            
-            fields = bucket.keys()
+                # Set the fields            
+                fields = bucket.keys()
 
-        # Initialise a new row
-        row = []
+                # Initialise a new row
+                row = []
 
-        # Add values to the row
-        for field in fields:
-            row.append(bucket[field])
-        
-        # Add the row to the table
-        table.add_row(row)
+                # Add values to the row
+                for field in fields:
+                    row.append(bucket[field])
+            
+                # Add the row to the table
+                table.add_row(row)
 
-    # Set the field names based on the unique fields in the fields list
-    table.field_names = fields
-    table.title = "Interim Result: " + bucket_no + " (" + start_time + " - " + end_time + ")"
-    return table
+        # Set the field names based on the unique fields in the fields list
+        table.field_names = fields
+        table.title = "Interim Results"
+
+        return table
+    else:
+        return "No reading_groups yet added to full_results in the coordination_dict"
 
 def get_final_results_table(full_results):
     outer_table = PrettyTable([str("Results for Test Run: " + full_results["test_run"])])
@@ -687,7 +688,8 @@ def get_buckets_table(full_results):
 
     for reading_group_id in full_results["reading_groups"]:
         reading_group = full_results["reading_groups"][reading_group_id]
-        for bucket in reading_group["buckets"]:
+        for bucket_no in reading_group["buckets"]:
+            bucket = reading_group["buckets"][bucket_no]
             if len(fields) == 0:
                 fields = bucket.keys()
             
@@ -725,7 +727,9 @@ def update_summary_metrics(full_results):
         reading_group_total_docs_retrieved = 0
         reading_group_total_response_time_ms = 0
 
-        for bucket in full_results["reading_groups"][reading_group]["buckets"]:
+        for bucket_no in full_results["reading_groups"][reading_group]["buckets"]:
+            bucket = full_results["reading_groups"][reading_group]["buckets"][bucket_no]
+
             reading_group_duration_seconds += bucket["bucket_duration_secs"]
             reading_group_total_docs_retrieved += bucket["total_docs_retrieved"]
             reading_group_total_response_time_ms += ( bucket["avg_response_time_ms"] * bucket["total_docs_retrieved"] )

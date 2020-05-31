@@ -337,8 +337,11 @@ def execute_queries(response_metrics_queue, coll, coordination_dict):
     # Set the size of the response metrics batches to build before adding to the queue
     response_metrics_batch_size = read_config.response_metrics_batch_size
 
+    # Create a local copy of the reading_groups_list
+    reading_groups_list = coordination_dict['reading_groups_list'].copy()
+
     # Initialise list which will represent the reading_groups weighted by read_proportion
-    weighted_reading_group_list = get_weighted_reading_groups_list(coordination_dict['reading_groups_list'])
+    weighted_reading_group_list = get_weighted_reading_groups_list(reading_groups_list)
     
     # Update the reported 'phase' in the coordination_dict
     thread_info['phase'] = 'waiting_for_start_time'
@@ -358,7 +361,7 @@ def execute_queries(response_metrics_queue, coll, coordination_dict):
     # Loop until endtime
     while (datetime.datetime.now() < end_time):
         # Get a doc id and reading group (based on defined proportionality)
-        reading_group_id, doc_id = get_doc_id(coordination_dict['reading_groups_list'], weighted_reading_group_list)
+        reading_group_id, doc_id = get_doc_id(reading_groups_list, weighted_reading_group_list)
 
         # Time the execution of the find command
         start = datetime.datetime.now()

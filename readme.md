@@ -12,10 +12,6 @@ TBC
 
 ### Should do now
 ### Things Remaining
-[ ] Check how the new response queue batch process works under higher load (on GCP VM). Run test cases such as
-    - Normal test, batch size [1,200]
-    - Test with 0.01s sleep in each execution, batch size [1,200]
-    - Run the two test above with 1:1 proc:thread, and then with 10:1 proc:thread
 [ ] Compare to POCDriver for a similar number of threads
 [ ] Run a couple of proper tests
 [ ] Write up a readme.md

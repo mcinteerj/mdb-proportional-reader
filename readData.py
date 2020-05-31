@@ -4,7 +4,6 @@ from multiprocessing import Process, Queue
 from threading import Thread
 import multiprocessing
 import threading
-import timeit
 import random
 import datetime
 import json
@@ -182,7 +181,6 @@ def results_handler(response_metrics_queue, coordination_dict):
         'thread_id': current_thread_id,
         'process_id': current_proc_id
     }
-    
     coordination_dict['thread_states'][current_thread_id] = thread_info
     
     # Block until start and end times added to coordination dict
@@ -226,6 +224,7 @@ def results_handler(response_metrics_queue, coordination_dict):
             # Get item from the queue
             response_item_batch = response_metrics_queue.get(True, 2)
 
+            # For each item in the batch
             for response_item in response_item_batch:    
                 # Assign vars for each of the elements of the tuple
                 resp_reading_group, resp_response_time, resp_timestamp = response_item
@@ -303,6 +302,7 @@ def begin_query_execution_threads(response_metrics_queue, coordination_dict):
     for thread in thread_list:
         thread.start()
 
+    # Join the threads (i.e. block until all threads complete)
     for thread in thread_list:
         thread.join()
 
@@ -351,13 +351,13 @@ def execute_queries(response_metrics_queue, coll, coordination_dict):
     thread_info['phase'] = 'executing'
     coordination_dict['thread_states'][current_thread_id] = thread_info
 
-    # Initialise a list of response metrics, we will submit batches of multiple response metrics
+    # Initialise a list of response metrics, we submit batches of multiple response metrics
     #  to the queue in order to reduce contention/locking relating to the queue
     response_metrics_batch = []
 
     # Loop until endtime
     while (datetime.datetime.now() < end_time):
-        # Get a doc id and reading group (in line with defined proportions)
+        # Get a doc id and reading group (based on defined proportionality)
         reading_group_id, doc_id = get_doc_id(coordination_dict['reading_groups_list'], weighted_reading_group_list)
 
         # Time the execution of the find command
@@ -367,10 +367,10 @@ def execute_queries(response_metrics_queue, coll, coordination_dict):
         end = datetime.datetime.now()
 
         # Calculate the response time in milliseconds
-        responseTimeMs = ((end - start).total_seconds() * 1000)
+        response_time_ms = ((end - start).total_seconds() * 1000)
 
         # Adda tuple entry to the response metrics batch
-        response_metrics_batch.append((reading_group_id, responseTimeMs, start))
+        response_metrics_batch.append((reading_group_id, response_time_ms, start))
         
         # If the number of entries in the batch has reached the batch size
         if len(response_metrics_batch) >= response_metrics_batch_size:
@@ -399,7 +399,7 @@ def get_mongo_collection():
 def wait_for_timings(coordination_dict):
     # While start and end times have not been added, sleep/loop
     while coordination_dict['start_time'] == False or coordination_dict['end_time'] == False: 
-        time.sleep(0.2)
+        time.sleep(0.1)
 
 def get_bucket_timings_dict(start_time, end_time, bucket_duration_secs):
     # Initialise the dict and bucket_duration as a timedelta
@@ -440,6 +440,7 @@ def get_bucket_no(bucket_timings, resp_timestamp):
             return bucket_no
 
 def add_resp_to_bucket(bucket, resp_response_time):
+    # Update the average, total and tps values based on latest response
     bucket['avg_response_time_ms'] = (((bucket['avg_response_time_ms'] * bucket['total_docs_retrieved']) + resp_response_time) / (bucket['total_docs_retrieved'] + 1))
     bucket['total_docs_retrieved'] += 1
     bucket['tps'] = bucket['total_docs_retrieved'] / bucket['bucket_duration_secs'] if bucket['bucket_duration_secs'] > 0 else "bucket duration <1s"
@@ -479,21 +480,21 @@ def get_doc_id(reading_groups_list, weighted_reading_group_list):
     return reading_group, doc_id
 
 def process_coordinator(response_metrics_queue, coordination_dict, read_duration_seconds):
-    all_threads_ready = False
     pre_start_buffer_secs = read_config.pre_start_buffer_secs
     curses_mode = read_config.curses_mode
     
     # +1 is for the Results Handler
-    expected_no_of_threads = (coordination_dict["total_read_threads"]) + 1
+    expected_num_of_threads = (coordination_dict["total_read_threads"]) + 1
+    current_num_ready_threads = len(coordination_dict['thread_states'].keys())
+    
     # While waiting for all processes/threads to start (incl +1 for results handler)
-    while all_threads_ready == False:
-        current_reporting_threads = len(coordination_dict['thread_states'].keys())
-        if current_reporting_threads != expected_no_of_threads:
-            print("Waiting for " + str(expected_no_of_threads - current_reporting_threads) + " of " +  str(expected_no_of_threads) + " threads to start")
-            time.sleep(0.2)
-        else:
-            all_threads_ready = True
-            print(str(len(coordination_dict['thread_states'].keys())) + " of " +  str(expected_no_of_threads) + " threads started")
+    while current_num_ready_threads != expected_num_of_threads:
+        print("Waiting for " + str(expected_num_of_threads - current_num_ready_threads) + " of " +  str(expected_num_of_threads) + " threads to start")
+        time.sleep(0.2)
+        current_num_ready_threads = len(coordination_dict['thread_states'].keys())
+    
+    # Print confirmation that threads have started
+    print(str(len(coordination_dict['thread_states'].keys())) + " of " +  str(expected_num_of_threads) + " threads started")
 
     # Set the start and end times for the test
     start_time = datetime.datetime.now() + datetime.timedelta(seconds=pre_start_buffer_secs)
@@ -501,8 +502,10 @@ def process_coordinator(response_metrics_queue, coordination_dict, read_duration
     coordination_dict['start_time'] = start_time
     coordination_dict['end_time'] = end_time
 
+    # Print querry execution about to begin
     print("Query execution to begin in " + str(pre_start_buffer_secs) + " seconds")
 
+    # This function is used as a wrapper for the curses display (it's only used if curses_mode = true in read_config)
     def do_display(scr):
         printed_text = ''
         curses.use_default_colors()
@@ -523,6 +526,7 @@ def process_coordinator(response_metrics_queue, coordination_dict, read_duration
         printed_text += str(get_bucket_results_table(coordination_dict)) + "\n \n"
         scr.refresh()
 
+        # Printed text is essentially a representation of all states of the screen in the loop above
         return printed_text
 
 
@@ -538,8 +542,8 @@ def process_coordinator(response_metrics_queue, coordination_dict, read_duration
             print(get_bucket_results_table(coordination_dict))
             print("*******")
 
+    # Get and print the results tables
     results_table = get_final_results_table(coordination_dict['full_results'])
-
     print(results_table)
 
     # Write the fullResultsDict to a file
@@ -567,7 +571,7 @@ def is_test_finished(coordination_dict):
 
 def get_thread_states_table(coordination_dict):
     table = PrettyTable()
-    table.title = "Thread State  " + datetime.datetime.now().strftime("%H:%M:%S.%f")
+    table.title = "Thread States " + datetime.datetime.now().strftime("%H:%M:%S.%f")
     fields = []
     rows = []
 
@@ -621,7 +625,7 @@ def get_bucket_results_table(coordination_dict):
 
         # Set the field names based on the unique fields in the fields list
         table.field_names = fields
-        table.title = "Interim Results"
+        table.title = "Interim Results " + datetime.datetime.now().strftime("%H:%M:%S.%f")
 
         return table
     else:
@@ -630,7 +634,6 @@ def get_bucket_results_table(coordination_dict):
 def get_final_results_table(full_results):
     outer_table = PrettyTable([str("Results for Test Run: " + full_results["test_run"])])
     outer_table.align = 'l'
-
 
     outer_table.add_row([get_summary_table(full_results)])
     outer_table.add_row([get_reading_groups_table(full_results)])
@@ -707,13 +710,6 @@ def get_buckets_table(full_results):
         buckets_table.add_row(row)
     
     return buckets_table
-
-def items_still_to_be_processed(resp_item_by_reading_group):
-    for reading_group_id in resp_item_by_reading_group:
-        if len(resp_item_by_reading_group[reading_group_id]) > 0:
-            return True 
-
-    return False
 
 def update_summary_metrics(full_results):
     new_full_results = full_results

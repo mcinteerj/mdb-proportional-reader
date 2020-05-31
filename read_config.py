@@ -4,7 +4,7 @@ read_ratio_list = [5,15]
 docs_ratio_list = [100,50]
 
 read_duration_seconds = 7
-result_bucket_duration_secs = 2
+result_bucket_duration_secs = 8
 
 read_procs  = 2
 threads_per_read_proc = 1

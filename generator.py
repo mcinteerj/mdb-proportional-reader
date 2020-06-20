@@ -47,7 +47,7 @@ def main():
 
     process_list = get_process_list(coordination_dict, response_metrics_queue)
 
-    drop_collection(get_mongo_collection())
+    initialise_collection(get_mongo_collection())
 
     start_processes(process_list)
 
@@ -268,8 +268,8 @@ def process_coordinator(coordination_dict, response_metrics_queue):
         print(get_thread_states_table(coordination_dict))
         print(get_interim_results(coordination_dict, "Interim Results " +
                                   datetime.datetime.now().strftime("%H:%M:%S.%f")))
-        print(str(coordination_dict['docs_inserted']) + " / " + str(coordination_dict['docs_to_insert']) + " docs inserted (" + str(round(coordination_dict['docs_inserted'] / coordination_dict['docs_to_insert'] * 100, 2)) + "%)")
-        
+        print(str(coordination_dict['docs_inserted']) + " / " + str(coordination_dict['docs_to_insert']) + " docs inserted (" + str(round(coordination_dict['docs_inserted'] / coordination_dict['docs_to_insert'] * 100, 3)) + "%)")
+
         time.sleep(generate_config.reporting_interval)
 
     results_table = get_final_results(coordination_dict)
@@ -484,8 +484,11 @@ def get_mongo_collection():
 
     return coll
 
-def drop_collection(coll):
+def initialise_collection(coll):
     coll.drop()
+    coll.create_index('orderId')
+    coll.create_index('creditorName')
+    
 
 def write_string_to_file(string, file_name):
     path = "./generate_results/"

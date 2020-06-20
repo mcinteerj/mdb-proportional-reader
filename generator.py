@@ -159,7 +159,6 @@ def insert_many_documents(lower_doc_id, upper_doc_id, coordination_dict, respons
             current_doc_id += 1
 
         start = datetime.datetime.now()
-        time.sleep(0.001)
         collection.insert_many(docs_list)
         end = datetime.datetime.now()
 
@@ -175,8 +174,55 @@ def insert_many_documents(lower_doc_id, upper_doc_id, coordination_dict, respons
     update_thread_state(coordination_dict, 'doc_inserter',
                         'complete', current_thread_id)
 
-    return
+def insert_one_documents(lower_doc_id, upper_doc_id, coordination_dict, response_metrics_queue):
+    current_thread_id = str(multiprocessing.current_process(
+    ).pid) + "-" + str(threading.current_thread().ident)
 
+    print("Process " + str(current_thread_id) + " inserting docs " +
+          str(lower_doc_id) + " - " + str(upper_doc_id))
+
+    current_doc_id = lower_doc_id
+    insert_chunk_size = generate_config.insert_chunk_size
+
+    collection = get_mongo_collection()
+
+    update_thread_state(coordination_dict, 'doc_inserter',
+                        'awaiting_timing', current_thread_id)
+
+    # Wait for start time to be provided
+    while not coordination_dict['start_time']:
+        time.sleep(0.1)
+
+    update_thread_state(coordination_dict, 'doc_inserter',
+                        'awaiting_start', current_thread_id)
+
+    # Wait for start time
+    while datetime.datetime.now() < coordination_dict['start_time']:
+        time.sleep(0.01)
+
+    update_thread_state(coordination_dict, 'doc_inserter',
+                        'inserting', current_thread_id)
+
+    response_metrics_batch = []
+
+    while current_doc_id < upper_doc_id:
+        start = datetime.datetime.now()
+        collection.insert_one(create_document(current_doc_id, current_thread_id))
+        end = datetime.datetime.now()
+
+        response_time_ms = ((end - start).total_seconds() * 1000)
+        response_metrics_batch.append(
+            (start, response_time_ms, 1))
+        
+        current_doc_id += 1
+        
+        # If response metrics batch has reached batch size, or this is the last document, add metrics to queue
+        if len(response_metrics_batch) > generate_config.response_metrics_batch_size or current_doc_id == upper_doc_id:
+            response_metrics_queue.put(response_metrics_batch)
+            response_metrics_batch = []
+
+    update_thread_state(coordination_dict, 'doc_inserter',
+                        'complete', current_thread_id)
 
 def create_document(current_doc_id, process_id):
     #doc = {

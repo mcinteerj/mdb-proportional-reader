@@ -26,7 +26,7 @@ def main():
 
     # Create a managed/shared dict
     coordination_dict = manager.dict({
-        "test_run": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "test_run": datetime.datetime.now().strftime("%Y%m%d-%H%M%S"),
         'start_time': False,
         'end_time': False,
         'duration_secs': False,

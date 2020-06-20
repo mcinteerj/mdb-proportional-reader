@@ -49,9 +49,8 @@ def main():
         'read_procs': read_procs,
         'threads_per_read_proc': threads_per_read_proc,
         'total_read_threads': read_procs * threads_per_read_proc,
-        'thread_states': manager.dict(), 
-        'interim_results': manager.list(),
-        'full_results': {}
+        'thread_states': manager.dict(),
+        'results': {}
     })
 
     # Create a queue for each process to add response metrics results to
@@ -194,9 +193,9 @@ def results_handler(response_metrics_queue, coordination_dict):
     start_time = coordination_dict['start_time']
     end_time = coordination_dict['end_time']
 
-    # Initialise the bucket_timings and full_results dicts
+    # Initialise the bucket_timings and results dicts
     bucket_timings = get_bucket_timings_dict(start_time, end_time, read_config.result_bucket_duration_secs)
-    full_results = get_init_results_dict(coordination_dict, bucket_timings)
+    results = get_init_results_dict(coordination_dict, bucket_timings)
     
     # Update the reported 'phase' in the coordination_dict
     thread_info['phase'] = 'waiting_for_start_time'
@@ -233,11 +232,11 @@ def results_handler(response_metrics_queue, coordination_dict):
                 bucket_no = get_bucket_no(bucket_timings, resp_timestamp)
 
                 # Update the bucket values (by reading group and bucket) for this response_time
-                full_results['reading_groups'][resp_reading_group]['buckets'][bucket_no] = add_resp_to_bucket(full_results['reading_groups'][resp_reading_group]['buckets'][bucket_no], resp_response_time)
+                results['reading_groups'][resp_reading_group]['buckets'][bucket_no] = add_resp_to_bucket(results['reading_groups'][resp_reading_group]['buckets'][bucket_no], resp_response_time)
 
             # Update the full results dict and then the coordination dict with the latest results
-            full_results = update_summary_metrics(full_results)
-            coordination_dict['full_results'] = full_results
+            results = update_summary_metrics(results)
+            coordination_dict['results'] = results
 
     # Update the thread state to show thread is finished
     thread_info['phase'] = 'finished'
@@ -546,19 +545,19 @@ def process_coordinator(response_metrics_queue, coordination_dict, read_duration
             print("*******")
 
     # Get and print the results tables
-    results_table = get_final_results_table(coordination_dict['full_results'])
+    results_table = get_final_results_table(coordination_dict['results'])
     print(results_table)
 
     # Write the fullResultsDict to a file
-    full_results_file_name = coordination_dict["full_results"]["test_run"] + "-full_results.json"
-    write_string_to_file(json.dumps(coordination_dict['full_results'],indent=2), full_results_file_name)
+    results_file_name = coordination_dict["results"]["test_run"] + "-results.json"
+    write_string_to_file(json.dumps(coordination_dict['results'],indent=2), results_file_name)
     
     # Write the resultsTable to a file
-    results_table_file_name = coordination_dict["full_results"]["test_run"] + "-results_table.txt"
+    results_table_file_name = coordination_dict["results"]["test_run"] + "-results_table.txt"
     write_string_to_file(str(results_table), results_table_file_name)
 
     # Print file name/location on screen
-    print("Results Dict written to " + full_results_file_name)
+    print("Results Dict written to " + results_file_name)
     print("Results Table written to " + results_table_file_name)
     
 def is_test_finished(coordination_dict):
@@ -601,17 +600,16 @@ def get_thread_states_table(coordination_dict):
     return table
 
 def get_bucket_results_table(coordination_dict):
-    full_results = coordination_dict['full_results']
+    results = coordination_dict['results']
     
     table = PrettyTable()
     
     fields = []
-    rows = []
 
-    if 'reading_groups' in full_results:
-        for reading_group_no in full_results['reading_groups']:
-            for bucket_no in full_results['reading_groups'][reading_group_no]['buckets']:
-                bucket = full_results['reading_groups'][reading_group_no]['buckets'][bucket_no]
+    if 'reading_groups' in results:
+        for reading_group_no in results['reading_groups']:
+            for bucket_no in results['reading_groups'][reading_group_no]['buckets']:
+                bucket = results['reading_groups'][reading_group_no]['buckets'][bucket_no]
 
                 # Set the fields            
                 fields = bucket.keys()
@@ -632,25 +630,25 @@ def get_bucket_results_table(coordination_dict):
 
         return table
     else:
-        return "No reading_groups yet added to full_results in the coordination_dict"
+        return "No reading_groups yet added to results in the coordination_dict"
 
-def get_final_results_table(full_results):
-    outer_table = PrettyTable([str("Results for Test Run: " + full_results["test_run"])])
+def get_final_results_table(results):
+    outer_table = PrettyTable([str("Results for Test Run: " + results["test_run"])])
     outer_table.align = 'l'
 
-    outer_table.add_row([get_summary_table(full_results)])
-    outer_table.add_row([get_reading_groups_table(full_results)])
-    outer_table.add_row([get_buckets_table(full_results)])
+    outer_table.add_row([get_summary_table(results)])
+    outer_table.add_row([get_reading_groups_table(results)])
+    outer_table.add_row([get_buckets_table(results)])
 
     return outer_table
 
-def get_summary_table(full_results):
+def get_summary_table(results):
     fields = []
     row = []
-    start_time = full_results.pop('start_time')
-    end_time = full_results.pop('end_time')
+    start_time = results.pop('start_time')
+    end_time = results.pop('end_time')
 
-    for key,value in full_results.items():
+    for key,value in results.items():
         if key != "reading_groups":
             fields.append(key)
             row.append(value)
@@ -661,12 +659,12 @@ def get_summary_table(full_results):
 
     return summary_table
 
-def get_reading_groups_table(full_results):
+def get_reading_groups_table(results):
     fields = []
     rows = []
 
-    for reading_group_id in full_results["reading_groups"]:
-        reading_group = full_results["reading_groups"][reading_group_id]
+    for reading_group_id in results["reading_groups"]:
+        reading_group = results["reading_groups"][reading_group_id]
         if len(fields) == 0:
             for key in reading_group.keys():
                 if key != "buckets":
@@ -688,12 +686,12 @@ def get_reading_groups_table(full_results):
 
     return reading_group_table
 
-def get_buckets_table(full_results):
+def get_buckets_table(results):
     fields = []
     rows = []
 
-    for reading_group_id in full_results["reading_groups"]:
-        reading_group = full_results["reading_groups"][reading_group_id]
+    for reading_group_id in results["reading_groups"]:
+        reading_group = results["reading_groups"][reading_group_id]
         for bucket_no in reading_group["buckets"]:
             bucket = reading_group["buckets"][bucket_no]
             if len(fields) == 0:
@@ -714,38 +712,38 @@ def get_buckets_table(full_results):
     
     return buckets_table
 
-def update_summary_metrics(full_results):
-    new_full_results = full_results
+def update_summary_metrics(results):
+    new_results = results
 
-    full_test_duration_seconds = full_results["test_duration_seconds"]
+    full_test_duration_seconds = results["test_duration_seconds"]
     full_test_total_docs_retrieved = 0
     full_test_total_response_time_ms = 0
         
-    for reading_group in full_results["reading_groups"]:
+    for reading_group in results["reading_groups"]:
         reading_group_duration_seconds = 0
         reading_group_total_docs_retrieved = 0
         reading_group_total_response_time_ms = 0
 
-        for bucket_no in full_results["reading_groups"][reading_group]["buckets"]:
-            bucket = full_results["reading_groups"][reading_group]["buckets"][bucket_no]
+        for bucket_no in results["reading_groups"][reading_group]["buckets"]:
+            bucket = results["reading_groups"][reading_group]["buckets"][bucket_no]
 
             reading_group_duration_seconds += bucket["bucket_duration_secs"]
             reading_group_total_docs_retrieved += bucket["total_docs_retrieved"]
             reading_group_total_response_time_ms += ( bucket["avg_response_time_ms"] * bucket["total_docs_retrieved"] )
         
-        full_results["reading_groups"][reading_group]["elapsed_seconds"] = reading_group_duration_seconds
-        full_results["reading_groups"][reading_group]["total_docs_retrieved"] = reading_group_total_docs_retrieved
-        full_results["reading_groups"][reading_group]["tps"] = reading_group_total_docs_retrieved / reading_group_duration_seconds if reading_group_duration_seconds > 0 else 0
-        full_results["reading_groups"][reading_group]["avg_response_ms"] = reading_group_total_response_time_ms / reading_group_total_docs_retrieved if reading_group_total_docs_retrieved > 0 else 0
+        results["reading_groups"][reading_group]["elapsed_seconds"] = reading_group_duration_seconds
+        results["reading_groups"][reading_group]["total_docs_retrieved"] = reading_group_total_docs_retrieved
+        results["reading_groups"][reading_group]["tps"] = reading_group_total_docs_retrieved / reading_group_duration_seconds if reading_group_duration_seconds > 0 else 0
+        results["reading_groups"][reading_group]["avg_response_ms"] = reading_group_total_response_time_ms / reading_group_total_docs_retrieved if reading_group_total_docs_retrieved > 0 else 0
 
         full_test_total_docs_retrieved += reading_group_total_docs_retrieved
         full_test_total_response_time_ms += reading_group_total_response_time_ms
     
-    full_results["total_docs_retrieved"] = full_test_total_docs_retrieved
-    full_results["tps"] = full_test_total_docs_retrieved / full_test_duration_seconds if full_test_duration_seconds > 0 else 0 
-    full_results["avg_response_ms"] = full_test_total_response_time_ms / full_test_total_docs_retrieved if full_test_total_docs_retrieved > 0 else 0
+    results["total_docs_retrieved"] = full_test_total_docs_retrieved
+    results["tps"] = full_test_total_docs_retrieved / full_test_duration_seconds if full_test_duration_seconds > 0 else 0 
+    results["avg_response_ms"] = full_test_total_response_time_ms / full_test_total_docs_retrieved if full_test_total_docs_retrieved > 0 else 0
 
-    return full_results
+    return results
 
 def write_string_to_file(string, file_name):
     path = "./read_results/"

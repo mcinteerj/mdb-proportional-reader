@@ -1,5 +1,6 @@
 # Results dir
 /read_results
+/generate_results
 .DS_Store
 /old
 # Byte-compiled / optimized / DLL files

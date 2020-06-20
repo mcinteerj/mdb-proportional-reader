@@ -22,7 +22,6 @@ The configuration of the tool is contained in three files:
 
 ## Future work
 ### Immediate Generation Activities
-[ ] Implement threading
 [ ] Test Insert Many with 1 doc vs Insert One
 
 ### Future

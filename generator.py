@@ -100,10 +100,18 @@ def begin_insert_threads(coordination_dict, response_metrics_queue, lower_doc_id
 
     # Add to the thread_list the number of threads defined in the config file
     for t in range(threads_per_process):
-        thread = threading.Thread(target=insert_many_documents, args=(lower_doc_id, min(
-            upper_doc_id, (lower_doc_id + docs_per_thread)), coordination_dict, response_metrics_queue))
+        current_upper = lower_doc_id + docs_per_thread
+
+        # If last loop, set to max upper
+        if current_upper + docs_per_thread > upper_doc_id:
+            current_upper = upper_doc_id
+
+        thread = threading.Thread(target=insert_many_documents, args=(lower_doc_id, current_upper, coordination_dict, response_metrics_queue))
         thread_list.append(thread)
+        
         lower_doc_id += docs_per_thread
+        
+
 
     # Start the threads
     for thread in thread_list:
@@ -489,7 +497,6 @@ def initialise_collection(coll):
     coll.create_index('orderId')
     coll.create_index('creditorName')
     
-
 def write_string_to_file(string, file_name):
     path = "./generate_results/"
     if not os.path.exists(path):

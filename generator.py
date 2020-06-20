@@ -268,6 +268,8 @@ def process_coordinator(coordination_dict, response_metrics_queue):
         print(get_thread_states_table(coordination_dict))
         print(get_interim_results(coordination_dict, "Interim Results " +
                                   datetime.datetime.now().strftime("%H:%M:%S.%f")))
+        print(str(coordination_dict['docs_inserted']) + " / " + str(coordination_dict['docs_to_insert']) + " docs inserted (" + str(round(coordination_dict['docs_inserted'] / coordination_dict['docs_to_insert'] * 100, 2)) + "%)")
+        
         time.sleep(generate_config.reporting_interval)
 
     results_table = get_final_results(coordination_dict)

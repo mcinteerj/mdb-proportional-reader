@@ -55,7 +55,6 @@ def main():
 
     join_processes(process_list)
 
-
 def get_process_list(coordination_dict, response_metrics_queue):
     process_list = []
     lower_doc_id = 0
@@ -86,12 +85,10 @@ def get_process_list(coordination_dict, response_metrics_queue):
 
     return process_list
 
-
 def start_processes(process_list):
     # Start each process in the list
     for process in process_list:
         process.start()
-
 
 def begin_insert_threads(coordination_dict, response_metrics_queue, lower_doc_id, upper_doc_id):
     # Initialise Thread list
@@ -115,7 +112,6 @@ def begin_insert_threads(coordination_dict, response_metrics_queue, lower_doc_id
     # Join the threads (i.e. block until all threads complete)
     for thread in thread_list:
         thread.join()
-
 
 def insert_many_documents(lower_doc_id, upper_doc_id, coordination_dict, response_metrics_queue):
     current_thread_id = str(multiprocessing.current_process(
@@ -247,7 +243,6 @@ def create_document(current_doc_id, process_id):
 
     return doc
 
-
 def process_coordinator(coordination_dict, response_metrics_queue):
     # +1 for results handler proc
     expected_no_of_processes = coordination_dict['no_of_processes'] + 1
@@ -290,7 +285,6 @@ def process_coordinator(coordination_dict, response_metrics_queue):
 
     return
 
-
 def get_interim_results(coordination_dict, title):
     result_buckets = coordination_dict['result_buckets'].copy()
 
@@ -309,7 +303,6 @@ def get_interim_results(coordination_dict, title):
 
     return table
 
-
 def get_thread_states_table(coordination_dict):
     title = "Thread States " + datetime.datetime.now().strftime("%H:%M:%S.%f")
     thread_states = coordination_dict['thread_states'].copy()
@@ -326,10 +319,9 @@ def get_thread_states_table(coordination_dict):
 
     return table
 
-
 def get_summary_results(coordination_dict):
-    start_time = coordination_dict.pop('start_time')
-    end_time = coordination_dict.pop('end_time')
+    start_time = coordination_dict['start_time']
+    end_time = coordination_dict['end_time']
     fields = ['duration_secs', 'no_of_processes', 'threads_per_process', 'insert_chunk_size',
               'docs_inserted', 'docs_inserted_per_second', 'no_of_responses', 'avg_response_time_ms']
 
@@ -346,7 +338,6 @@ def get_summary_results(coordination_dict):
 
     return summary_table
 
-
 def get_final_results(coordination_dict):
     outer_table = PrettyTable(
         [str("Results for Test Run: " + coordination_dict["test_run"])])
@@ -358,14 +349,12 @@ def get_final_results(coordination_dict):
 
     return outer_table
 
-
 def update_thread_state(coordination_dict, type, phase, current_thread_id):
     coordination_dict['thread_states'][current_thread_id] = {
         'type': type,
         'phase': phase,
         'process_id': current_thread_id
     }
-
 
 def results_handler(coordination_dict, response_metrics_queue):
     current_thread_id = str(multiprocessing.current_process(
@@ -412,7 +401,6 @@ def results_handler(coordination_dict, response_metrics_queue):
 
     return
 
-
 def update_summary_results(coordination_dict, end_time):
     coordination_dict['end_time'] = end_time
     coordination_dict['duration_secs'] = (
@@ -434,7 +422,6 @@ def update_summary_results(coordination_dict, end_time):
         coordination_dict['duration_secs']
     coordination_dict['avg_response_time_ms'] = total_response_time / \
         coordination_dict['docs_inserted']
-
 
 def update_results(coordination_dict, timestamp, response_time_ms, no_of_docs):
     bucket_no = get_bucket_no(coordination_dict, timestamp)
@@ -459,7 +446,6 @@ def update_results(coordination_dict, timestamp, response_time_ms, no_of_docs):
 
     coordination_dict['result_buckets'] = result_buckets
 
-
 def update_last_bucket(coordination_dict):
     bucket_no = get_bucket_no(coordination_dict, coordination_dict['end_time'])
     result_buckets = coordination_dict['result_buckets'].copy()
@@ -471,14 +457,12 @@ def update_last_bucket(coordination_dict):
 
     coordination_dict['result_buckets'] = result_buckets
 
-
 def get_bucket_no(coordination_dict, timestamp):
     time_since_start = timestamp - coordination_dict['start_time']
     bucket_no = math.floor(time_since_start.total_seconds(
     ) / generate_config.result_bucket_duration)
 
     return bucket_no
-
 
 def docs_still_inserting(coordination_dict):
 
@@ -490,7 +474,6 @@ def docs_still_inserting(coordination_dict):
 
     return False
 
-
 def get_mongo_collection():
     # Define mongoclient based on global_config
     client = MongoClient(global_config.mongo_uri)
@@ -499,10 +482,8 @@ def get_mongo_collection():
 
     return coll
 
-
 def drop_collection(coll):
     coll.drop()
-
 
 def write_string_to_file(string, file_name):
     path = "./generate_results/"
@@ -513,7 +494,6 @@ def write_string_to_file(string, file_name):
 
     with open(full_file_path, 'w') as file:
         file.write(string)
-
 
 def join_processes(process_list):
     for process in process_list:

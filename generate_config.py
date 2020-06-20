@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-docs_to_insert = 2000000
+docs_to_insert = 200000
 insert_chunk_size = 124
 processes = 2
 threads_per_process = 2

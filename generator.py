@@ -355,7 +355,7 @@ def get_final_results(coordination_dict):
 
     outer_table.add_row([get_summary_results(coordination_dict)])
     outer_table.add_row([get_interim_results(
-        coordination_dict, "Results Breakdown " + datetime.datetime.now().strftime("%H:%M:%S.%f"))])
+        coordination_dict, "Results Breakdown")])
 
     return outer_table
 
@@ -392,16 +392,26 @@ def results_handler(coordination_dict, response_metrics_queue):
     update_thread_state(coordination_dict, 'results_handler',
                         'executing', current_thread_id)
 
-    while coordination_dict['docs_inserted'] < coordination_dict['docs_to_insert'] or not response_metrics_queue.empty():
+    docs_inserted = coordination_dict['docs_inserted']
+    docs_to_insert = coordination_dict['docs_to_insert']
+    result_buckets = {}
+    
+    while docs_inserted < docs_to_insert or not response_metrics_queue.empty():
         if not response_metrics_queue.empty():
+            
             resp_item_list = response_metrics_queue.get()
-
+            
             for timestamp, response_time_ms, no_of_docs in resp_item_list:
-                update_results(coordination_dict, timestamp,
-                               response_time_ms, no_of_docs)
+                update_results(result_buckets, timestamp,
+                               response_time_ms, no_of_docs, start_time)
                 end_time = max(end_time, timestamp)
 
-            update_summary_results(coordination_dict, end_time)
+                docs_inserted += no_of_docs
+            
+            coordination_dict['result_buckets'] = result_buckets
+            coordination_dict['docs_inserted'] = docs_inserted
+
+    update_summary_results(coordination_dict, end_time)
 
     # Tidy up the last bucket (by updating end-time to match end-time of the test and re-calculating the TPS)
     update_last_bucket(coordination_dict)
@@ -433,14 +443,13 @@ def update_summary_results(coordination_dict, end_time):
     coordination_dict['avg_response_time_ms'] = total_response_time / \
         coordination_dict['docs_inserted']
 
-def update_results(coordination_dict, timestamp, response_time_ms, no_of_docs):
-    bucket_no = get_bucket_no(coordination_dict, timestamp)
-    result_buckets = coordination_dict['result_buckets'].copy()
+def update_results(result_buckets, timestamp, response_time_ms, no_of_docs, start_time):
+    bucket_no = get_bucket_no(timestamp, start_time)
 
     if bucket_no not in result_buckets:
         result_buckets[bucket_no] = {
-            'bucket_start_time': coordination_dict['start_time'] + datetime.timedelta(seconds=(generate_config.result_bucket_duration * bucket_no)),
-            'bucket_end_time': coordination_dict['start_time'] + datetime.timedelta(seconds=(generate_config.result_bucket_duration * (bucket_no + 1))),
+            'bucket_start_time': start_time + datetime.timedelta(seconds=(generate_config.result_bucket_duration * bucket_no)),
+            'bucket_end_time': start_time + datetime.timedelta(seconds=(generate_config.result_bucket_duration * (bucket_no + 1))),
             'docs_inserted': 0,
             'docs_inserted_per_second': 0,
             'no_of_responses': 0,
@@ -454,10 +463,8 @@ def update_results(coordination_dict, timestamp, response_time_ms, no_of_docs):
     result_buckets[bucket_no]['docs_inserted_per_second'] = result_buckets[bucket_no]['docs_inserted'] / \
         generate_config.result_bucket_duration
 
-    coordination_dict['result_buckets'] = result_buckets
-
 def update_last_bucket(coordination_dict):
-    bucket_no = get_bucket_no(coordination_dict, coordination_dict['end_time'])
+    bucket_no = get_bucket_no(coordination_dict['end_time'], coordination_dict['start_time'])
     result_buckets = coordination_dict['result_buckets'].copy()
 
     result_buckets[bucket_no]['bucket_end_time'] = coordination_dict['end_time']
@@ -467,8 +474,8 @@ def update_last_bucket(coordination_dict):
 
     coordination_dict['result_buckets'] = result_buckets
 
-def get_bucket_no(coordination_dict, timestamp):
-    time_since_start = timestamp - coordination_dict['start_time']
+def get_bucket_no(timestamp, start_time):
+    time_since_start = timestamp - start_time
     bucket_no = math.floor(time_since_start.total_seconds(
     ) / generate_config.result_bucket_duration)
 
@@ -512,7 +519,6 @@ def join_processes(process_list):
         process.join()
 
     print("All processes joined")
-
 
 if __name__ == "__main__":
     main()

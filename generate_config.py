@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 docs_to_insert = 100000
-insert_chunk_size = 100
+insert_chunk_size = 1
 processes = 3
 threads_per_process = 4
 reporting_interval = 0.5

@@ -395,7 +395,7 @@ def results_handler(coordination_dict, response_metrics_queue):
     docs_inserted = coordination_dict['docs_inserted']
     docs_to_insert = coordination_dict['docs_to_insert']
     result_buckets = {}
-    
+
     while docs_inserted < docs_to_insert or not response_metrics_queue.empty():
         if not response_metrics_queue.empty():
             
@@ -438,10 +438,10 @@ def update_summary_results(coordination_dict, end_time):
 
     coordination_dict['docs_inserted'] = docs_inserted
     coordination_dict['no_of_responses'] = no_of_responses
-    coordination_dict['docs_inserted_per_second'] = docs_inserted / \
-        coordination_dict['duration_secs']
-    coordination_dict['avg_response_time_ms'] = total_response_time / \
-        coordination_dict['docs_inserted']
+    coordination_dict['docs_inserted_per_second'] = round(docs_inserted / \
+        coordination_dict['duration_secs'], 5)
+    coordination_dict['avg_response_time_ms'] = round(total_response_time / \
+        coordination_dict['docs_inserted'], 5)
 
 def update_results(result_buckets, timestamp, response_time_ms, no_of_docs, start_time):
     bucket_no = get_bucket_no(timestamp, start_time)
@@ -456,21 +456,21 @@ def update_results(result_buckets, timestamp, response_time_ms, no_of_docs, star
             'avg_response_time_ms': 0
         }
 
-    result_buckets[bucket_no]['avg_response_time_ms'] = (
-        ((result_buckets[bucket_no]['avg_response_time_ms'] * result_buckets[bucket_no]['no_of_responses']) + response_time_ms) / (result_buckets[bucket_no]['no_of_responses'] + 1))
+    result_buckets[bucket_no]['avg_response_time_ms'] = round(
+        ((result_buckets[bucket_no]['avg_response_time_ms'] * result_buckets[bucket_no]['no_of_responses']) + response_time_ms) / (result_buckets[bucket_no]['no_of_responses'] + 1), 5)
     result_buckets[bucket_no]['no_of_responses'] += 1
     result_buckets[bucket_no]['docs_inserted'] += no_of_docs
-    result_buckets[bucket_no]['docs_inserted_per_second'] = result_buckets[bucket_no]['docs_inserted'] / \
-        generate_config.result_bucket_duration
+    result_buckets[bucket_no]['docs_inserted_per_second'] = round(result_buckets[bucket_no]['docs_inserted'] / \
+        generate_config.result_bucket_duration, 4)
 
 def update_last_bucket(coordination_dict):
     bucket_no = get_bucket_no(coordination_dict['end_time'], coordination_dict['start_time'])
     result_buckets = coordination_dict['result_buckets'].copy()
 
     result_buckets[bucket_no]['bucket_end_time'] = coordination_dict['end_time']
-    result_buckets[bucket_no]['docs_inserted_per_second'] = result_buckets[bucket_no]['docs_inserted'] / \
+    result_buckets[bucket_no]['docs_inserted_per_second'] = round(result_buckets[bucket_no]['docs_inserted'] / \
         (result_buckets[bucket_no]['bucket_end_time'] -
-         result_buckets[bucket_no]['bucket_start_time']).total_seconds()
+         result_buckets[bucket_no]['bucket_start_time']).total_seconds(), 5)
 
     coordination_dict['result_buckets'] = result_buckets
 

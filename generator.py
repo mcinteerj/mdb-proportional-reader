@@ -247,6 +247,7 @@ def create_document(current_doc_id, process_id):
         "creditorAcnt": "DE0210010010907118603",
         "remInforUnst": "Ref Number Merchant",
         "status": "NEW"
+        #"blob": os.urandom(240)
     }
 
     return doc

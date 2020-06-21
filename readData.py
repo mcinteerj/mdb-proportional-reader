@@ -244,7 +244,7 @@ def results_handler(response_metrics_queue, coordination_dict):
 
 def get_init_results_dict(coordination_dict, bucket_timings):
     results_dict = { 
-        "test_run": coordination_dict["start_time"].strftime("%Y-%m-%d %H:%M:%S"),
+        "test_run": coordination_dict["start_time"].strftime("%Y%m%d-%H%M%S"),
         "start_time": coordination_dict["start_time"].strftime("%Y-%m-%d %H:%M:%S"),
         "end_time": coordination_dict["end_time"].strftime("%Y-%m-%d %H:%M:%S"),
         'read_procs': coordination_dict['read_procs'],
@@ -479,7 +479,7 @@ def get_doc_id(reading_groups_list, weighted_reading_group_list):
     # Define the query based on randomly selecting an id in the defined range
     doc_id = random.randrange(lower, upper)
 
-    return reading_group, doc_id
+    return reading_group, str(doc_id)
 
 def process_coordinator(response_metrics_queue, coordination_dict, read_duration_seconds):
     pre_start_buffer_secs = read_config.pre_start_buffer_secs

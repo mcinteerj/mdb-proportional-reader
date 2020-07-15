@@ -14,9 +14,9 @@ You should be able work this out using trial and error, I'd recommend installing
 
 ## Configuration
 The configuration of the tool is contained in three files:
-* ./global_config.py -> Contains the MongoDB connection information and database/collection names
-* ./generate_config.py -> Contains the generation workload configuration
-* ./read_config.py -> Contains the read workload configuration
+* `./global_config.py` -> Contains the MongoDB connection information and database/collection names
+* `./generate_config.py` -> Contains the generation workload configuration
+* `./read_config.py` -> Contains the read workload configuration
 
 The settings/values in these files are documented in detail in the sections below. The key values you are likely to want to update when running a test are:
 

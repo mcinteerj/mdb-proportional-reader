@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 
-read_ratio_list = [5,15]
-docs_ratio_list = [100,50]
+read_ratio_list = [20,10,5]
+docs_ratio_list = [5,5,10]
 
-read_duration_seconds = 7
-result_bucket_duration_secs = 8
+read_duration_seconds = 120
+result_bucket_duration_secs = 15
 
-read_procs  = 2
-threads_per_read_proc = 1
+processes  = 4
+threads_per_process = 2
 
 # With curses mode enabled(true), curses are used to show interim status on screen
 # with curses mode disabled(false), results will be repeatedly printed

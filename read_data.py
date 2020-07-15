@@ -21,8 +21,8 @@ def main():
     print("Retrieving read config....")
     read_duration_seconds = read_config.read_duration_seconds
 
-    read_procs = read_config.read_procs
-    threads_per_read_proc = read_config.threads_per_read_proc
+    read_procs = read_config.processes
+    threads_per_read_proc = read_config.threads_per_process
 
     read_ratio_list = read_config.read_ratio_list
     docs_ratio_list = read_config.docs_ratio_list
@@ -463,8 +463,8 @@ def get_weighted_reading_groups_list(reading_groups_list):
     
     # For each reading_group in the list
     for reading_group in reading_groups_list:
-        # Add int(readingProportion * 1000) entries of the current reading_group to the array
-        weighted_reading_group_list.extend([reading_group["reading_group_id"]] * int(reading_group["read_proportion"] * 1000))
+        # Add int(readingProportion * 100) entries of the current reading_group to the array
+        weighted_reading_group_list.extend([reading_group["reading_group_id"]] * int(reading_group["read_proportion"] * 100))
 
     return weighted_reading_group_list
 

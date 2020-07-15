@@ -229,27 +229,13 @@ def insert_one_documents(lower_doc_id, upper_doc_id, coordination_dict, response
                         'complete', current_thread_id)
 
 def create_document(current_doc_id, process_id):
-    #doc = {
-    #    "_id": current_doc_id,
-    #    "id": current_doc_id,
-    #    "proc": process_id
-    #}
-
     doc = {
-        "_id": str(current_doc_id),
-        "orderId": str(current_doc_id),
-        "instructedAmt": {
-            "currency": "EUR",
-            "amount": 123.5
-        },
-        "debtorAcnt": "DE40100100103307118608",
-        "creditorName": "Merchant123",
-        "creditorAcnt": "DE0210010010907118603",
-        "remInforUnst": "Ref Number Merchant",
-        "status": "NEW"
-        #"blob": os.urandom(240)
+        "_id": current_doc_id,
+        "id": current_doc_id,
+        "proc": process_id,
+        "blob": os.urandom(240)
     }
-
+    
     return doc
 
 def process_coordinator(coordination_dict, response_metrics_queue):

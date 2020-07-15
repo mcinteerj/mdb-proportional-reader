@@ -59,7 +59,7 @@ The results will also be written in both json and a text/table format to files i
 # Detailed Documentation
 ## Data Generation/Insertion
 The `./generator.py` script will automatically generate the number of documents specified in the `/generate_config.py` file and insert these into the specified MongoDB cluster. Each document is configured to have the following shape (as defined in function `create_document()`):
-```json
+```
 {
     "_id": 1,
     "id": 1,
